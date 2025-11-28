@@ -50,95 +50,65 @@ def main():
     next_seq_num = 0
     window_buffer = {}  # Dictionary to store sent but unACKed segments
     
-    with open(filename, 'rb') as file:
-        file_exhausted = False
-        total_segments = 0
+    # Read file data upfront
+    with open(filename, 'rb') as f:
+        file_data = f.read()
+    
+    total_segments = (len(file_data) + mss - 1) // mss
+    
+    def create_segment_from_data(seq_num):
+        """Create segment for given sequence number from file data"""
+        start = seq_num * mss
+        end = min(start + mss, len(file_data))
+        data = file_data[start:end]
+        return create_segment(data, seq_num)
+    
+    # Go-back-N protocol with sliding window buffer
+    window_buffer = {}  # Dictionary to store sent but unACKed segments
+    
+    while True:
+        # Send new packets within window
+        while next_seq_num < base + window_size and next_seq_num < total_segments:
+            # Create and send segment
+            segment = create_segment_from_data(next_seq_num)
+            client_socket.sendto(segment, (server_host, server_port))
+            
+            # Buffer the segment for potential retransmission
+            window_buffer[next_seq_num] = segment
+            next_seq_num += 1
         
-        while True:
-            # Send new packets within window
-            while next_seq_num < base + window_size and not file_exhausted:
-                # Read next chunk of data
-                data = file.read(mss)
-                
-                if not data:
-                    file_exhausted = True
-                    total_segments = next_seq_num
-                    break
-                
-                # Create and send segment
-                segment = create_segment(data, next_seq_num)
-                client_socket.sendto(segment, (server_host, server_port))
-                
-                # Buffer the segment for potential retransmission
-                window_buffer[next_seq_num] = segment
-                next_seq_num += 1
+        # Check if we're done - all segments sent AND all ACKed
+        if base == total_segments:
+            break
+        
+        # Wait for ACK
+        try:
+            ack_packet, _ = client_socket.recvfrom(1024)
             
-            # Check if we're done - all segments sent AND all ACKed
-            if file_exhausted and base >= total_segments:
-                break
-            
-            # If file is exhausted but we still have unACKed packets, 
-            # we need to keep waiting for ACKs
-            if file_exhausted and base < total_segments:
-                # Wait for ACKs with timeout
-                try:
-                    ack_packet, _ = client_socket.recvfrom(1024)
-                    
-                    # Parse ACK
-                    if len(ack_packet) >= 8:
-                        ack_seq_num = struct.unpack('!I', ack_packet[0:4])[0]
-                        zeros = struct.unpack('!H', ack_packet[4:6])[0]
-                        ack_type = struct.unpack('!H', ack_packet[6:8])[0]
-                        
-                        # Verify it's an ACK packet
-                        if ack_type == 0b1010101010101010 and zeros == 0:
-                            # Remove ACKed segments from buffer
-                            for seq in range(base, ack_seq_num + 1):
-                                if seq in window_buffer:
-                                    del window_buffer[seq]
-                            
-                            # Move window
-                            base = ack_seq_num + 1
+            # Parse ACK
+            if len(ack_packet) >= 8:
+                ack_seq_num = struct.unpack('!I', ack_packet[0:4])[0]
+                zeros = struct.unpack('!H', ack_packet[4:6])[0]
+                ack_type = struct.unpack('!H', ack_packet[6:8])[0]
                 
-                except socket.timeout:
-                    # Timeout - retransmit all packets in window
-                    print(f"Timeout, sequence number = {base}")
-                    
-                    # Retransmit all segments in the window
-                    for seq in range(base, total_segments):
+                # Verify it's an ACK packet
+                if ack_type == 0b1010101010101010 and zeros == 0:
+                    # Remove ACKed segments from buffer
+                    for seq in range(base, ack_seq_num + 1):
                         if seq in window_buffer:
-                            client_socket.sendto(window_buffer[seq], (server_host, server_port))
-                continue
-            
-            # Normal case: still sending new packets
-            # Wait for ACK
-            try:
-                ack_packet, _ = client_socket.recvfrom(1024)
-                
-                # Parse ACK
-                if len(ack_packet) >= 8:
-                    ack_seq_num = struct.unpack('!I', ack_packet[0:4])[0]
-                    zeros = struct.unpack('!H', ack_packet[4:6])[0]
-                    ack_type = struct.unpack('!H', ack_packet[6:8])[0]
+                            del window_buffer[seq]
                     
-                    # Verify it's an ACK packet
-                    if ack_type == 0b1010101010101010 and zeros == 0:
-                        # Remove ACKed segments from buffer
-                        for seq in range(base, ack_seq_num + 1):
-                            if seq in window_buffer:
-                                del window_buffer[seq]
-                        
-                        # Move window
-                        base = ack_seq_num + 1
+                    # Move window
+                    base = ack_seq_num + 1
+        
+        except socket.timeout:
+            # Timeout - retransmit all packets in window
+            print(f"Timeout, sequence number = {base}")
             
-            except socket.timeout:
-                # Timeout - retransmit all packets in window
-                print(f"Timeout, sequence number = {base}")
-                
-                # Retransmit all segments in the window
-                for seq in range(base, next_seq_num):
-                    if seq in window_buffer:
-                        client_socket.sendto(window_buffer[seq], (server_host, server_port))
+            # Retransmit all segments in the window
+            for seq in range(base, next_seq_num):
+                if seq in window_buffer:
+                    client_socket.sendto(window_buffer[seq], (server_host, server_port))
     
     client_socket.close()
 

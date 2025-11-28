@@ -46,56 +46,72 @@ def main():
     print("Press Ctrl+C to stop\n")
     
     expected_seq_num = 0
+    output_file = None
+    
+    # Setup signal handler for graceful shutdown
+    def signal_handler(sig, frame):
+        print("\n\nShutting down server gracefully...")
+        if output_file:
+            output_file.close()
+        server_socket.close()
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
     
     try:
-        with open(filename, 'wb') as file:
-            while True:
-                try:
-                    # Receive packet
-                    packet, client_address = server_socket.recvfrom(65535)
-                except socket.timeout:
-                    # Timeout is normal, just continue waiting
-                    continue
+        output_file = open(filename, 'wb')
+        
+        while True:
+            try:
+                # Receive packet
+                packet, client_address = server_socket.recvfrom(65535)
+            except socket.timeout:
+                # Timeout is normal, just continue waiting
+                # Flush the file periodically to avoid data loss
+                output_file.flush()
+                continue
+            
+            # Parse header (32-bit seq, 16-bit checksum, 16-bit type)
+            if len(packet) < 8:
+                continue
+            
+            seq_num = struct.unpack('!I', packet[0:4])[0]
+            recv_checksum = struct.unpack('!H', packet[4:6])[0]
+            packet_type = struct.unpack('!H', packet[6:8])[0]
+            data = packet[8:]
+            
+            # Check if this is a data packet
+            if packet_type != 0b0101010101010101:
+                continue
+            
+            # Probabilistic loss service
+            r = random.random()
+            if r <= loss_prob:
+                print(f"Packet loss, sequence number = {seq_num}")
+                continue
+            
+            # Compute checksum of data
+            computed_checksum = compute_checksum(data)
+            
+            # Check if packet is in-sequence and checksum is correct
+            if seq_num == expected_seq_num and computed_checksum == recv_checksum:
+                # Write data to file
+                output_file.write(data)
                 
-                # Parse header (32-bit seq, 16-bit checksum, 16-bit type)
-                if len(packet) < 8:
-                    continue
+                # Send ACK
+                ack_packet = struct.pack('!I', seq_num)  # 32-bit seq number
+                ack_packet += struct.pack('!H', 0)  # 16-bit all zeros
+                ack_packet += struct.pack('!H', 0b1010101010101010)  # 16-bit ACK type
                 
-                seq_num = struct.unpack('!I', packet[0:4])[0]
-                recv_checksum = struct.unpack('!H', packet[4:6])[0]
-                packet_type = struct.unpack('!H', packet[6:8])[0]
-                data = packet[8:]
+                server_socket.sendto(ack_packet, client_address)
                 
-                # Check if this is a data packet
-                if packet_type != 0b0101010101010101:
-                    continue
-                
-                # Probabilistic loss service
-                r = random.random()
-                if r <= loss_prob:
-                    print(f"Packet loss, sequence number = {seq_num}")
-                    continue
-                
-                # Compute checksum of data
-                computed_checksum = compute_checksum(data)
-                
-                # Check if packet is in-sequence and checksum is correct
-                if seq_num == expected_seq_num and computed_checksum == recv_checksum:
-                    # Write data to file
-                    file.write(data)
-                    
-                    # Send ACK
-                    ack_packet = struct.pack('!I', seq_num)  # 32-bit seq number
-                    ack_packet += struct.pack('!H', 0)  # 16-bit all zeros
-                    ack_packet += struct.pack('!H', 0b1010101010101010)  # 16-bit ACK type
-                    
-                    server_socket.sendto(ack_packet, client_address)
-                    
-                    expected_seq_num += 1
-                # If out-of-sequence or checksum incorrect, do nothing
+                expected_seq_num += 1
+            # If out-of-sequence or checksum incorrect, do nothing
     except Exception as e:
         print(f"\nError: {e}")
     finally:
+        if output_file:
+            output_file.close()
         server_socket.close()
         print("Server closed.")
 
