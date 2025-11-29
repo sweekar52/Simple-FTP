@@ -4,6 +4,7 @@ import socket
 import struct
 import random
 import signal
+import time
 
 def compute_checksum(data):
     """Compute 16-bit checksum similar to UDP checksum"""
@@ -20,7 +21,7 @@ def compute_checksum(data):
 
 def main():
     if len(sys.argv) != 4:
-        print("Usage: python3 simple_ftp_server.py <port#> <file-name> <p>")
+        print("Usage: python3 Simple_ftp_server.py <port#> <file-name> <p>")
         sys.exit(1)
     
     port = int(sys.argv[1])
@@ -32,14 +33,6 @@ def main():
     server_socket.bind(('', port))
     server_socket.settimeout(1.0)  # 1 second timeout to allow signal handling
     
-    # Setup signal handler for graceful shutdown
-    def signal_handler(sig, frame):
-        print("\n\nShutting down server gracefully...")
-        server_socket.close()
-        sys.exit(0)
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    
     print(f"Server listening on port {port}...")
     print(f"Saving to file: {filename}")
     print(f"Packet loss probability: {loss_prob}")
@@ -47,6 +40,9 @@ def main():
     
     expected_seq_num = 0
     output_file = None
+    last_packet_time = time.time()
+    received_any_packet = False  # Track if we've received at least one packet
+    idle_timeout = 30  # Exit after 30 seconds of no packets (generous for retransmissions)
     
     # Setup signal handler for graceful shutdown
     def signal_handler(sig, frame):
@@ -54,7 +50,7 @@ def main():
         if output_file:
             output_file.close()
         server_socket.close()
-        sys.exit(0)
+        sys.exit(130)  # Standard exit code for SIGINT (Ctrl+C)
     
     signal.signal(signal.SIGINT, signal_handler)
     
@@ -69,6 +65,12 @@ def main():
                 # Timeout is normal, just continue waiting
                 # Flush the file periodically to avoid data loss
                 output_file.flush()
+                
+                # Only check idle timeout if we've received at least one packet
+                if received_any_packet and (time.time() - last_packet_time > idle_timeout):
+                    print(f"\nNo data received for {idle_timeout} seconds. Transfer complete.")
+                    break
+                
                 continue
             
             # Parse header (32-bit seq, 16-bit checksum, 16-bit type)
@@ -83,6 +85,11 @@ def main():
             # Check if this is a data packet
             if packet_type != 0b0101010101010101:
                 continue
+            
+            # Mark that we've received at least one data packet
+            # and update timer (even if we drop it - client is still active)
+            received_any_packet = True
+            last_packet_time = time.time()
             
             # Probabilistic loss service
             r = random.random()
@@ -106,7 +113,8 @@ def main():
                 server_socket.sendto(ack_packet, client_address)
                 
                 expected_seq_num += 1
-            # If out-of-sequence or checksum incorrect, do nothing
+            # If out-of-sequence or checksum incorrect, do nothing (Go-back-N discards)
+            
     except Exception as e:
         print(f"\nError: {e}")
     finally:

@@ -3,7 +3,8 @@ import sys
 import socket
 import struct
 import time
-import select
+import json
+import os
 
 def compute_checksum(data):
     """Compute 16-bit checksum similar to UDP checksum"""
@@ -20,7 +21,7 @@ def compute_checksum(data):
 
 def main():
     if len(sys.argv) != 6:
-        print("Usage: python3 simple_ftp_client.py <server-host-name> <server-port#> <file-name> <N> <MSS>")
+        print("Usage: python Simple_ftp_client.py <server-host-name> <server-port#> <file-name> <N> <MSS>")
         sys.exit(1)
     
     server_host = sys.argv[1]
@@ -45,11 +46,6 @@ def main():
         
         return header + data
     
-    # Go-back-N protocol with sliding window buffer
-    base = 0
-    next_seq_num = 0
-    window_buffer = {}  # Dictionary to store sent but unACKed segments
-    
     # Read file data upfront
     with open(filename, 'rb') as f:
         file_data = f.read()
@@ -64,7 +60,13 @@ def main():
         return create_segment(data, seq_num)
     
     # Go-back-N protocol with sliding window buffer
+    base = 0
+    next_seq_num = 0
     window_buffer = {}  # Dictionary to store sent but unACKed segments
+    
+    # Statistics tracking
+    timeout_count = 0
+    start_time = time.time()
     
     while True:
         # Send new packets within window
@@ -104,13 +106,39 @@ def main():
         except socket.timeout:
             # Timeout - retransmit all packets in window
             print(f"Timeout, sequence number = {base}")
+            timeout_count += 1
             
             # Retransmit all segments in the window
             for seq in range(base, next_seq_num):
                 if seq in window_buffer:
                     client_socket.sendto(window_buffer[seq], (server_host, server_port))
     
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    
     client_socket.close()
+    
+    # Save statistics to JSON file
+    stats = {
+        'window_size': window_size,
+        'mss': mss,
+        'file_size': len(file_data),
+        'total_segments': total_segments,
+        'elapsed_time': elapsed_time,
+        'timeout_count': timeout_count,
+        'server': f"{server_host}:{server_port}",
+        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+    }
+    
+    # Append to stats file
+    stats_file = 'transfer_stats.jsonl'
+    with open(stats_file, 'a') as f:
+        f.write(json.dumps(stats) + '\n')
+    
+    print(f"\nTransfer complete!")
+    print(f"Time: {elapsed_time:.2f} seconds")
+    print(f"Timeouts: {timeout_count}")
+    print(f"Stats saved to {stats_file}")
 
 if __name__ == "__main__":
     main()
