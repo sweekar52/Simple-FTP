@@ -1,3 +1,3 @@
-Client: python Simple_ftp_client.py localhost 7735 testfile.txt 64 500
+Client: python Simple_ftp_client.py <Server IP Address> 7735 testfile.txt 64 500
 Server: python Simple_ftp_server.py 7735 received_file.txt 0.05
 Diff: diff testfile.txt received_file.txt && echo "SUCCESS: Files are identical!"
